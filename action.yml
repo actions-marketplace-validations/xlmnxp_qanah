@@ -56,22 +56,27 @@ runs:
     - name: Set up Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Resolve action path
+      id: paths
+      shell: bash
+      run: echo "dir=$(realpath "${{ github.action_path }}")" >> "$GITHUB_OUTPUT"
+
     - name: Compute cache key
       id: cache-key
       shell: bash
-      run: echo "lockhash=$(sha256sum "${{ github.action_path }}/Cargo.lock" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      run: echo "lockhash=$(sha256sum "${{ steps.paths.outputs.dir }}/Cargo.lock" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
     - name: Cache qanah build
       uses: actions/cache@v4
       with:
         path: |
-          ${{ github.action_path }}/target
+          ${{ steps.paths.outputs.dir }}/target
           ~/.cargo/registry
         key: qanah-cargo-${{ runner.os }}-${{ steps.cache-key.outputs.lockhash }}
 
     - name: Build qanah
       shell: bash
-      run: cargo build --release --manifest-path "${{ github.action_path }}/Cargo.toml"
+      run: cargo build --release --manifest-path "${{ steps.paths.outputs.dir }}/Cargo.toml"
 
     - name: Write config
       shell: bash
@@ -88,7 +93,7 @@ runs:
     - name: Start qanah
       shell: bash
       env:
-        QANAH_BIN: ${{ github.action_path }}/target/release/qanah
+        QANAH_BIN: ${{ steps.paths.outputs.dir }}/target/release/qanah
         QANAH_CONF_DIR: ${{ runner.temp }}/qanah
         QANAH_IFACE: ${{ inputs.interface-name }}
         QANAH_SIGNAL_SERVER: ${{ inputs.signal-server }}
