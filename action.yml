@@ -1,4 +1,4 @@
-name: 'Qanah'
+name: 'Connect Qanah Mesh'
 description: 'Connect this GitHub Actions runner into a Qanah WireGuard-over-WebRTC mesh'
 author: 'xlmnxp'
 branding:
