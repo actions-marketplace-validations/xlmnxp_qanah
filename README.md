@@ -168,6 +168,35 @@ sudo ./target/release/qanah -c peer1.conf \
 12. If no peer has the destination in its `AllowedIPs`, sends the packet to the first relay-capable peer wrapped in a relay envelope; that peer routes the inner packet onward (one hop only)
 13. On shutdown (Ctrl+C), runs `PreDown` commands, stops all tasks, then runs `PostDown` commands
 
+## GitHub Actions
+
+This repository is itself a [composite GitHub Action](action.yml), so a workflow can join a Qanah mesh during CI — e.g. to reach an internal/self-hosted resource (database, deploy target, private runner) without exposing it to the public internet.
+
+```yaml
+- name: Connect to Qanah mesh
+  uses: xlmnxp/qanah@main
+  with:
+    config: ${{ secrets.QANAH_CONFIG }}
+    ping: 10.0.0.1
+```
+
+The action builds `qanah` from source (cached across runs), writes `config` to a temp file, starts the tunnel in the background with `sudo`, then polls `ping` until it's reachable (or fails after `ping-timeout`).
+
+| Input | Description | Default |
+|---|---|---|
+| `config` | WireGuard-style config content (same format as `--config`) — store as a secret | *(required)* |
+| `ping` | Address of a mesh peer to ping to confirm the tunnel connected | *(required)* |
+| `ping-timeout` | Seconds to wait for `ping` to succeed | `60` |
+| `stun-urls` | STUN server URLs, one per line | qanah defaults |
+| `turn-url` / `turn-username` / `turn-credential` | TURN server settings | *(none)* |
+| `signal-server` | MQTT signaling server `host:port` | `broker.emqx.io:1883` |
+| `no-relay` | Disable relaying through this peer (`true`/`false`) | `false` |
+| `interface-name` | Name for the config file / TUN interface | `qanah0` |
+
+Outputs: `interface` — name of the TUN interface that was created.
+
+Requires a runner that supports TUN devices and passwordless `sudo` (GitHub-hosted Ubuntu runners work out of the box). The tunnel process is not explicitly torn down, since composite actions have no `post` hook — fine for ephemeral GitHub-hosted runners, but on a persistent self-hosted runner you should kill it yourself in an `if: always()` step.
+
 ## Requirements
 
 - Linux (TUN device support)

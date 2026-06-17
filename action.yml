@@ -1,0 +1,138 @@
+name: 'Qanah'
+description: 'Connect this GitHub Actions runner into a Qanah WireGuard-over-WebRTC mesh'
+author: 'xlmnxp'
+branding:
+  icon: 'shield'
+  color: 'purple'
+
+inputs:
+  config:
+    description: 'WireGuard-style config content for this peer (same format as --config). Store as a secret.'
+    required: true
+  ping:
+    description: 'Address of a mesh peer to ping in order to confirm the tunnel has connected'
+    required: true
+  ping-timeout:
+    description: 'Seconds to wait for the ping target to become reachable'
+    required: false
+    default: '60'
+  stun-urls:
+    description: 'STUN server URLs, one per line (defaults to qanah built-in STUN servers)'
+    required: false
+    default: ''
+  turn-url:
+    description: 'TURN server URL, e.g. turn:turn.example.com:3478'
+    required: false
+    default: ''
+  turn-username:
+    description: 'TURN server username'
+    required: false
+    default: ''
+  turn-credential:
+    description: 'TURN server credential'
+    required: false
+    default: ''
+  signal-server:
+    description: 'MQTT signaling server (host:port) for automatic SDP exchange'
+    required: false
+    default: 'broker.emqx.io:1883'
+  no-relay:
+    description: 'Disable relaying through this peer ("true"/"false")'
+    required: false
+    default: 'false'
+  interface-name:
+    description: 'Name for the config file / resulting TUN interface'
+    required: false
+    default: 'qanah0'
+
+outputs:
+  interface:
+    description: 'Name of the TUN interface that was created'
+    value: ${{ inputs.interface-name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache qanah build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ github.action_path }}/target
+          ~/.cargo/registry
+        key: qanah-cargo-${{ runner.os }}-${{ hashFiles(format('{0}/Cargo.lock', github.action_path)) }}
+
+    - name: Build qanah
+      shell: bash
+      run: cargo build --release --manifest-path "${{ github.action_path }}/Cargo.toml"
+
+    - name: Write config
+      shell: bash
+      env:
+        QANAH_CONFIG: ${{ inputs.config }}
+        QANAH_CONF_DIR: ${{ runner.temp }}/qanah
+        QANAH_IFACE: ${{ inputs.interface-name }}
+      run: |
+        set -euo pipefail
+        install -d -m 700 "$QANAH_CONF_DIR"
+        printf '%s\n' "$QANAH_CONFIG" > "$QANAH_CONF_DIR/$QANAH_IFACE.conf"
+        chmod 600 "$QANAH_CONF_DIR/$QANAH_IFACE.conf"
+
+    - name: Start qanah
+      shell: bash
+      env:
+        QANAH_BIN: ${{ github.action_path }}/target/release/qanah
+        QANAH_CONF_DIR: ${{ runner.temp }}/qanah
+        QANAH_IFACE: ${{ inputs.interface-name }}
+        QANAH_SIGNAL_SERVER: ${{ inputs.signal-server }}
+        QANAH_STUN_URLS: ${{ inputs.stun-urls }}
+        QANAH_TURN_URL: ${{ inputs.turn-url }}
+        QANAH_TURN_USERNAME: ${{ inputs.turn-username }}
+        QANAH_TURN_CREDENTIAL: ${{ inputs.turn-credential }}
+        QANAH_NO_RELAY: ${{ inputs.no-relay }}
+      run: |
+        set -euo pipefail
+        args=(--config "$QANAH_CONF_DIR/$QANAH_IFACE.conf" --signal-server "$QANAH_SIGNAL_SERVER")
+
+        if [ -n "$QANAH_STUN_URLS" ]; then
+          while IFS= read -r url; do
+            [ -n "$url" ] && args+=(--stun "$url")
+          done <<< "$QANAH_STUN_URLS"
+        fi
+
+        if [ -n "$QANAH_TURN_URL" ]; then
+          args+=(--turn-url "$QANAH_TURN_URL")
+          [ -n "$QANAH_TURN_USERNAME" ] && args+=(--turn-username "$QANAH_TURN_USERNAME")
+          [ -n "$QANAH_TURN_CREDENTIAL" ] && args+=(--turn-credential "$QANAH_TURN_CREDENTIAL")
+        fi
+
+        if [ "$QANAH_NO_RELAY" = "true" ]; then
+          args+=(--no-relay)
+        fi
+
+        echo "Starting qanah on interface $QANAH_IFACE"
+        sudo -E nohup "$QANAH_BIN" "${args[@]}" > "$QANAH_CONF_DIR/qanah.log" 2>&1 &
+        disown
+
+    - name: Wait for tunnel
+      shell: bash
+      env:
+        QANAH_CONF_DIR: ${{ runner.temp }}/qanah
+        QANAH_PING_TARGET: ${{ inputs.ping }}
+        QANAH_PING_TIMEOUT: ${{ inputs.ping-timeout }}
+      run: |
+        set -euo pipefail
+        deadline=$(( $(date +%s) + QANAH_PING_TIMEOUT ))
+        echo "Waiting for $QANAH_PING_TARGET to become reachable (timeout ${QANAH_PING_TIMEOUT}s)..."
+        until ping -c 1 -W 2 "$QANAH_PING_TARGET" > /dev/null 2>&1; do
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error::Timed out waiting for $QANAH_PING_TARGET to become reachable"
+            echo "----- qanah.log -----"
+            cat "$QANAH_CONF_DIR/qanah.log" || true
+            exit 1
+          fi
+          sleep 2
+        done
+        echo "Tunnel is up — $QANAH_PING_TARGET is reachable"
